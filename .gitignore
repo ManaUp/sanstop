@@ -1,4 +1,6 @@
 sanstop
 *.o
 *.exe
-test/
+test/*
+!test/targets-ascii.txt
+!test/targets-sjis.txt
