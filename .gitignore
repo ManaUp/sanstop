@@ -1,0 +1,4 @@
+sanstop
+*.o
+*.exe
+test/
