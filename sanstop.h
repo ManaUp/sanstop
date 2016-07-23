@@ -11,6 +11,8 @@
 #define IMAGE_DIM 512
 #define IMAGE_PIXELS (IMAGE_DIM * IMAGE_DIM)
 #define DDS_HEADER_SIZE 128
+#define VMARGIN 8
+#define HMARGIN 4
 
 typedef struct {
   uint8_t* data;
@@ -23,6 +25,8 @@ typedef struct {
   char* fontPrefix;
   char* targets;
   int size;
+  int hMargin, vMargin;
+  int hShift, vShift;
 } Config;
 
 typedef struct {
@@ -37,14 +41,14 @@ typedef struct {
 // Initializes a Buffer struct.
 int initializeBuffer(Buffer* b);
 // Increments the page counter, clears the data buffer, and resets coordinates.
-void flipPage(Buffer* b);
+void flipPage(Buffer* b, Config* c);
 // Returns 1 if there is not enough room in the current row to fit another
 // glyph of a given width, and thus the program should advance to the space
 // above.
 int shouldGoUp(Buffer* b, int width);
 // Returns 1 if there is not enough room in the current image to fit another
 // glyph of a given height, and thus the program should flip to a new page.
-int shouldFlip(Buffer* b, int height);
+int shouldFlip(Buffer* b, Config* c, int height);
 void goUp(Buffer* b, int height);
 void advance(Buffer* b, int width);
 
@@ -63,7 +67,7 @@ int blitAndAdvance(Buffer* b, FT_Face face, Glyph* gp, Config* c);
 
 void writeXMLHeader(FILE* f, FT_Face face, Config* c);
 void writeXMLPageData(FILE* f, Config* c, Buffer* b);
-void writeXMLGlyphData(FILE* f, int glyphCount, Glyph* glyphs);
+void writeXMLGlyphData(FILE* f, int glyphCount, Glyph* glyphs, Config* c);
 void writeXMLFooter(FILE* f);
 
 int readConfig(Config* c, int argc, char** argv);

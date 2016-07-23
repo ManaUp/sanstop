@@ -2,11 +2,11 @@
 #include "utf8.h"
 
 int main(int argc, char** argv) {
-  Config c = (Config) {NULL, NULL, NULL, -1};
+  Config c = (Config) {NULL, NULL, NULL, -1, HMARGIN, VMARGIN, 0, 0};
   Glyph* glyphs = NULL;
   FT_Library ft = NULL;
   FT_Face face = NULL;
-  Buffer b = (Buffer) {NULL, -1, 0, 512};
+  Buffer b = (Buffer) {NULL, -1, 1, IMAGE_DIM - c.vMargin - c.vShift};
   int stat = readConfig(&c, argc, argv);
   if (stat == 0) {
     size_t glyphCap = 256;
@@ -26,6 +26,11 @@ int main(int argc, char** argv) {
     if (FT_New_Face(ft, c.fontFileName, 0, &face) != 0) {
       fprintf(stderr, "Could not load font face %s\n", c.fontFileName);
       stat = -1;
+      goto end;
+    }
+    stat = FT_Select_Charmap(face, FT_ENCODING_UNICODE);
+    if (stat != 0) {
+      fprintf(stderr, "This font doesn't have a Unicode charmap.\n");
       goto end;
     }
     FT_Set_Pixel_Sizes(face, 0, c.size);
@@ -51,10 +56,12 @@ int main(int argc, char** argv) {
         stat = -1;
         goto end;
       }
-      if (codepoint == 10 || codepoint == 13) continue;
+      // printf("[%x] ", codepoint);
+      if (codepoint < 32 || codepoint == 0xfeff || codepoint == 0xfffe) continue;
       if (FT_Load_Char(face, codepoint, FT_LOAD_RENDER) != 0) {
         fprintf(stderr, "Warn: glyph %lc [0x%x] does not exist in this font.\n", codepoint, codepoint);
       } else {
+        // printf("[%x] ", codepoint);
         glyphs[glyphCount].id = codepoint;
         stat = blitAndAdvance(&b, face, glyphs + glyphCount, &c);
         if (stat != 0) goto end;
@@ -80,7 +87,7 @@ int main(int argc, char** argv) {
     }
     writeXMLHeader(f, face, &c);
     writeXMLPageData(f, &c, &b);
-    writeXMLGlyphData(f, glyphCount, glyphs);
+    writeXMLGlyphData(f, glyphCount, glyphs, &c);
     writeXMLFooter(f);
     fclose(f);
     free(fname);
@@ -102,24 +109,24 @@ int initializeBuffer(Buffer* b) {
   return 0;
 }
 
-void flipPage(Buffer* b) {
+void flipPage(Buffer* b, Config* c) {
   b->page++;
   memset(b->data, 0, IMAGE_PIXELS * sizeof(uint8_t));
-  b->x = 0;
-  b->y = IMAGE_DIM;
+  b->x = 1;
+  b->y = IMAGE_DIM - c->vMargin - c->vShift;
 }
 
 int shouldGoUp(Buffer* b, int width) {
   return IMAGE_DIM - b->x < width;
 }
 
-int shouldFlip(Buffer* b, int height) {
-  return b->y < height;
+int shouldFlip(Buffer* b, Config* c, int height) {
+  return b->y < height - c->vShift;
 }
 
 void goUp(Buffer* b, int height) {
   b->y -= height;
-  b->x = 0;
+  b->x = 1;
 }
 
 void advance(Buffer* b, int width) {
@@ -169,14 +176,14 @@ void blit(Buffer* b, FT_Face face, Glyph* gp, int tw, int th, int size) {
 }
 
 int blitAndAdvance(Buffer* b, FT_Face face, Glyph* gp, Config* c) {
-  int tw = face->glyph->advance.x >> 6;
-  int th = c->size * (face->ascender - face->descender) / face->units_per_EM;
+  int tw = (face->glyph->advance.x >> 6) + c->hMargin;
+  int th = c->vMargin + c->size * face->height / face->units_per_EM;
   if (shouldGoUp(b, tw))
     goUp(b, th);
-  if (shouldFlip(b, th)) {
+  if (shouldFlip(b, c, th)) {
     int stat = writePage(b, c);
     if (stat != 0) return stat;
-    flipPage(b);
+    flipPage(b, c);
   }
   blit(b, face, gp, tw, th, c->size);
   advance(b, tw);
@@ -192,7 +199,7 @@ const char* xmlFontPropertyFormatter =
   "Italic=\"%d\" "
   "Outline=\"0\" "
   "OutputFormat=\"DDS_A8\" "
-  "InvalidGlyph=\"127\">"
+  "InvalidGlyph=\"127\">\n"
   ;
 void writeXMLHeader(FILE* f, FT_Face face, Config* c) {
   fprintf(f, "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n");
@@ -200,22 +207,26 @@ void writeXMLHeader(FILE* f, FT_Face face, Config* c) {
     face->family_name,
     c->size * 5,
     700,
-    face->style_flags & FT_STYLE_FLAG_BOLD,
-    face->style_flags & FT_STYLE_FLAG_ITALIC
+    !!(face->style_flags & FT_STYLE_FLAG_BOLD),
+    !!(face->style_flags & FT_STYLE_FLAG_ITALIC)
   );
 }
 
 void writeXMLPageData(FILE* f, Config* c, Buffer* b) {
   int totalPages = b->page + 1;
-  fprintf(f, "<Pages Count=\"%d\">\n", totalPages);
+  fprintf(f, "\t\t<Pages Count=\"%d\">\n", totalPages);
+  char* proper = strrchr(c->fontPrefix, '/');
+  if (proper == NULL) proper = c->fontPrefix;
+  else ++proper;
   for (int i = 0; i < totalPages; ++i) {
-    fprintf(f, "<Page FileName=\"%s_%d.dds\" Width=\"%d\" Height=\"%d\" />",
-        c->fontPrefix, i, IMAGE_DIM, IMAGE_DIM);
+    fprintf(f, "\t\t\t\t<Page FileName=\"%s_%d.dds\" Width=\"%d\" Height=\"%d\" />\n",
+        proper, i, IMAGE_DIM, IMAGE_DIM);
   }
-  fprintf(f, "</Pages>");
+  fprintf(f, "\t\t</Pages>\n");
 }
 
 const char* xmlGlyphEntryFormatter =
+  "\t\t\t\t"
   "<Glyph ID=\"%d\" "
   "A=\"%d\" "
   "B=\"%d\" "
@@ -224,10 +235,13 @@ const char* xmlGlyphEntryFormatter =
   "Top=\"%d\" "
   "Bottom=\"%d\" "
   "Left=\"%d\" "
-  "Right=\"%d\" />"
+  "Right=\"%d\" />\n"
   ;
-void writeXMLGlyphData(FILE* f, int glyphCount, Glyph* glyphs) {
-  fprintf(f, "<Glyphs Count=\"%d\">", glyphCount);
+#include <time.h>
+#include <math.h>
+void writeXMLGlyphData(FILE* f, int glyphCount, Glyph* glyphs, Config* c) {
+  srand(time(NULL));
+  fprintf(f, "\t\t<Glyphs Count=\"%d\">\n", glyphCount);
   for (int i = 0; i < glyphCount; ++i) {
     Glyph g = glyphs[i];
     fprintf(f, xmlGlyphEntryFormatter,
@@ -236,13 +250,13 @@ void writeXMLGlyphData(FILE* f, int glyphCount, Glyph* glyphs) {
       g.right - g.left - 2,
       0,
       g.page,
-      g.top,
-      g.bottom,
-      g.left,
-      g.right
+      g.top + c->vShift,
+      g.bottom + c->vShift,
+      g.left + c->hShift,
+      g.right - c->hMargin + c->hShift
     );
   }
-  fprintf(f, "</Glyphs>");
+  fprintf(f, "\t\t</Glyphs>\n");
 }
 
 void writeXMLFooter(FILE* f) {
@@ -256,13 +270,41 @@ int readConfig(Config* c, int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     if (argv[i][0] == '-' && !ignoreOpts) {
       if (argv[i][1] == '-') {
-        if (argv[i][2] == '\0') ignoreOpts = 1;
-        else if (!strcmp(argv[i] + 2, "help")) {
+        char* opt = argv[i] + 2;
+        if (*opt == '\0') ignoreOpts = 1;
+        else if (!strcmp(opt, "help")) {
           printHelp();
           status = 1;
           break;
-        }
-        else {
+        } else if (!strcmp(opt, "horizontal-margin")) {
+          if (i >= argc - 1) {
+            fprintf(stderr, "--horizontal-margin requires a parameter.\n");
+            status = -1;
+            break;
+          }
+          c->hMargin = atoi(argv[++i]);
+        } else if (!strcmp(opt, "vertical-margin")) {
+          if (i >= argc - 1) {
+            fprintf(stderr, "--vertical-margin requires a parameter.\n");
+            status = -1;
+            break;
+          }
+          c->vMargin = atoi(argv[++i]);
+        } else if (!strcmp(opt, "horizontal-shift")) {
+          if (i >= argc - 1) {
+            fprintf(stderr, "--horizontal-shift requires a parameter.\n");
+            status = -1;
+            break;
+          }
+          c->hShift = atoi(argv[++i]);
+        } else if (!strcmp(opt, "vertical-shift")) {
+          if (i >= argc - 1) {
+            fprintf(stderr, "--vertical-shift requires a parameter.\n");
+            status = -1;
+            break;
+          }
+          c->vShift = atoi(argv[++i]);
+        } else {
           fprintf(stderr, "Invalid option %s.\n", argv[i]);
           status = -1;
           break;
@@ -336,6 +378,9 @@ int readConfig(Config* c, int argc, char** argv) {
   if (status == 0 && (c->fontFileName == NULL || c->fontPrefix == NULL ||
       c->targets == NULL || c->size <= 0))
     status = -1;
+  if (c->vShift > c->vMargin || c->vShift < -c->vMargin ||
+      c->hShift < 0 || c->hShift > c->hMargin)
+    fprintf(stderr, "Warn: shift exceeds margin bounds.\n");
   if (status == -1) printUsage();
   if (status == -2) fprintf(stderr, "Unexpected error; please tell kyarei.\n");
   return status;
@@ -360,6 +405,18 @@ static const char* USAGE =
   "  OPTIONS -\n"
   "    -h --help display this help message\n"
   "    -- don't treat future arguments starting with - as flags\n"
+  "    --horizontal-margin <amt> specify how much extra space to leave\n"
+  "        between glyphs (default: 4). Useful for dealing with\n"
+  "        ill-behaved fonts.\n"
+  "    --vertical-margin <amt> specify how much extra space to leave\n"
+  "        between rows (default: 8). Useful for dealing with\n"
+  "        ill-behaved fonts.\n"
+  "    --horizontal-shift <amt> specify how much to the left (-) or\n"
+  "        right (+) the bounding boxes should be adjusted (default: 0).\n"
+  "        Useful for dealing with ill-behaved fonts.\n"
+  "    --vertical-shift <amt> specify how much up (-) or down (+)\n"
+  "        the bounding boxes should be adjusted (default: 0).\n"
+  "        Useful for dealing with ill-behaved fonts.\n"
   "Return codes:\n"
   "  0: everything is fine\n"
   "  1: help was displayed\n"
